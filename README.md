@@ -984,6 +984,160 @@ This is a safety guard to reduce the chance of accidentally wiping a large exter
 
 ---
 
+## USB security hardening
+
+This section describes optional hardening steps for reducing the risk that a malicious or compromised USB device can affect the Raspberry Pi before the drive is wiped and reformatted.
+
+These steps improve isolation, but they still do **not** make this device a 100% secure malware removal system. In particular, software hardening cannot fully protect against all malicious USB firmware, USB controller bugs, kernel USB stack vulnerabilities, or advanced BadUSB-style attacks.
+
+Recommended baseline for higher-risk use:
+
+```text
+Raspberry Pi OS Lite
+no desktop automount
+no unnecessary network access
+USBGuard enabled
+read-only root filesystem / overlay filesystem if practical
+only one physically accessible USB port
+```
+
+### Prefer Raspberry Pi OS Lite and avoid automount
+
+Use Raspberry Pi OS Lite for the appliance if possible. Avoid desktop environments and file managers that may automatically inspect or mount USB media when inserted.
+
+If a Desktop image was used, consider disabling or removing automount-related components before using the device with untrusted USB drives.
+
+```bash
+sudo systemctl disable --now udisks2.service || true
+sudo apt purge -y gvfs* pcmanfm* || true
+```
+
+Note: `udisks2` is used by the formatting script only for the final optional `udisksctl power-off -b /dev/sdX` step. If you remove `udisks2`, formatting still works, but the final USB power-off command may fail harmlessly depending on your script version.
+
+### Block non-storage USB devices with USBGuard
+
+USBGuard can be used to reject unexpected USB device classes such as keyboards, mice, network adapters, serial adapters, and composite devices. This is useful because some malicious USB devices do not behave like flash drives at all; they may emulate a keyboard or another device type.
+
+Install and enable USBGuard:
+
+```bash
+sudo apt update
+sudo apt install -y usbguard
+sudo systemctl enable --now usbguard
+```
+
+Review the configuration:
+
+```bash
+sudo nano /etc/usbguard/usbguard-daemon.conf
+```
+
+Recommended restrictive options:
+
+```ini
+ImplicitPolicyTarget=reject
+PresentDevicePolicy=apply-policy
+PresentControllerPolicy=keep
+InsertedDevicePolicy=apply-policy
+RestoreControllerDeviceState=false
+```
+
+Then create or edit the rules file:
+
+```bash
+sudo nano /etc/usbguard/rules.conf
+```
+
+Example restrictive policy:
+
+```text
+# Allow USB mass storage devices.
+allow with-interface equals { 08:*:* }
+
+# Reject USB HID devices such as keyboards and mice.
+reject with-interface equals { 03:*:* }
+
+# Reject common wireless controller classes.
+reject with-interface equals { e0:*:* }
+
+# Reject everything else by default.
+reject
+```
+
+Restart USBGuard after changing the configuration:
+
+```bash
+sudo systemctl restart usbguard
+sudo systemctl status usbguard --no-pager
+```
+
+Test this carefully with disposable USB flash drives before routine use. Some flash drives or card readers may appear as composite devices; the policy may need local adjustment.
+
+### Restrict the udev trigger to USB block devices
+
+The Python formatter already checks that the target disk is on the USB bus before doing anything destructive. You can also make the udev rule more selective so the formatter service is requested only for USB block devices.
+
+Replace:
+
+```udev
+ACTION=="add", SUBSYSTEM=="block", KERNEL=="sd[a-z]", DEVTYPE=="disk", TAG+="systemd", ENV{SYSTEMD_WANTS}+="usb-format@%k.service"
+```
+
+with:
+
+```udev
+ACTION=="add", SUBSYSTEM=="block", KERNEL=="sd[a-z]", DEVTYPE=="disk", ENV{ID_BUS}=="usb", TAG+="systemd", ENV{SYSTEMD_WANTS}+="usb-format@%k.service"
+```
+
+Reload udev and systemd:
+
+```bash
+sudo udevadm control --reload-rules
+sudo systemctl daemon-reload
+```
+
+### Mount the newly formatted partition with safer options
+
+The script mounts the USB partition only after wiping, repartitioning, and creating a new exFAT filesystem. As an additional safety measure, the temporary mount can use `nosuid`, `nodev`, and `noexec`.
+
+In `copy_windows_identity_files()`, replace:
+
+```python
+run(["mount", "-t", "exfat", part, MOUNT_DIR])
+```
+
+with:
+
+```python
+run(["mount", "-t", "exfat", "-o", "nosuid,nodev,noexec,noatime,umask=077", part, MOUNT_DIR])
+```
+
+### Disable unnecessary network services
+
+For highest isolation, run the appliance without network access during routine use.
+
+```bash
+sudo systemctl disable --now ssh || true
+sudo systemctl disable --now bluetooth hciuart || true
+sudo rfkill block wifi || true
+sudo rfkill block bluetooth || true
+```
+
+If SSH is needed for maintenance, enable it only temporarily or restrict it to a trusted management network.
+
+### Use a read-only system where practical
+
+For a dedicated appliance, consider enabling a read-only root filesystem or overlay filesystem. This makes persistent compromise of the Raspberry Pi harder and makes it easier to restore a known-good state by rebooting or reflashing the microSD card.
+
+### Physical precautions
+
+- Expose only the USB port intended for the drive being formatted.
+- Physically block unused USB ports if the device is used by non-technical users.
+- Do not connect the Raspberry Pi to trusted internal networks while processing untrusted USB devices.
+- Treat the Raspberry Pi itself as semi-disposable in high-risk environments: keep a known-good image and be prepared to reflash the microSD card.
+
+---
+
 ## Troubleshooting
 ### Line endings
 If the file was created in Windows, it may have incorrect \r line endings. In that case, this can help:
