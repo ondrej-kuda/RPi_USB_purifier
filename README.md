@@ -985,6 +985,11 @@ This is a safety guard to reduce the chance of accidentally wiping a large exter
 ---
 
 ## Troubleshooting
+### Line endings
+If the file was created in Windows, it may have incorrect \r line endings. In that case, this can help:
+```bash
+dos2unix /usr/local/bin/format_usb.py
+```
 
 ### `parted ... mkpart primary exfat ... returned non-zero exit status 1`
 
